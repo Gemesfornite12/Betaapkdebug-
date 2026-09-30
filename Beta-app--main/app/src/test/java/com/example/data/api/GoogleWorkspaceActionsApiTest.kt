@@ -63,7 +63,8 @@ class GoogleWorkspaceActionsApiTest {
         val mime = String(Base64.decode(raw, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING), Charsets.UTF_8)
         assertTrue(mime.contains("To: person@example.com"))
         assertTrue(mime.contains(Base64.encodeToString("Hello".toByteArray(), Base64.NO_WRAP)))
-        assertTrue(mime.contains("Message body"))
+        val encodedText = mime.substringAfter("\r\n\r\n")
+        assertEquals("Message body", String(Base64.decode(encodedText, Base64.NO_WRAP), Charsets.UTF_8))
     }
 
     @Test

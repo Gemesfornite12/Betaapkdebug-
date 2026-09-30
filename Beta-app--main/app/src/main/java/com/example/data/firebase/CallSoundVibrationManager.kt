@@ -1,0 +1,420 @@
+package com.example.data.firebase
+
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.media.ToneGenerator
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Gestor integral de Audio, Sonido de Timbre (Ringtone), Tonos de Marcación y Vibración Continua
+ * para llamadas de voz y videollamadas entrantes, salientes y estados de conexión.
+ */
+object CallSoundVibrationManager {
+
+    private const val TAG = "CallSoundVibMgr"
+
+    private var mediaPlayer: MediaPlayer? = null
+    private var ringtone: Ringtone? = null
+    private var toneGenerator: ToneGenerator? = null
+    private var dialToneJob: Job? = null
+
+    private var isPlayingIncoming = false
+    private var isPlayingOutgoing = false
+
+    private fun getVibrator(context: Context): Vibrator? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting Vibrator: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Comprueba si el horario No Molestar (DND) está activo actualmente.
+     */
+    fun isDndActive(context: Context): Boolean {
+        return try {
+            val prefs = context.getSharedPreferences("app_settings_prefs", Context.MODE_PRIVATE)
+            val enabled = prefs.getBoolean("dnd_enabled", false)
+            if (!enabled) return false
+
+            val startH = prefs.getInt("dnd_start_hour", 22)
+            val startM = prefs.getInt("dnd_start_minute", 0)
+            val endH = prefs.getInt("dnd_end_hour", 7)
+            val endM = prefs.getInt("dnd_end_minute", 0)
+            val daysStr = prefs.getString("dnd_days", "1,2,3,4,5,6,7") ?: "1,2,3,4,5,6,7"
+            val days = daysStr.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+
+            val now = java.util.Calendar.getInstance()
+            val calDay = now.get(java.util.Calendar.DAY_OF_WEEK)
+            val todayIdx = if (calDay == java.util.Calendar.SUNDAY) 7 else calDay - 1
+            val yesterdayIdx = if (todayIdx == 1) 7 else todayIdx - 1
+
+            val currentMins = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+            val startMins = startH * 60 + startM
+            val endMins = endH * 60 + endM
+
+            if (startMins == endMins) return days.contains(todayIdx)
+
+            if (startMins < endMins) {
+                days.contains(todayIdx) && (currentMins in startMins until endMins)
+            } else {
+                if (currentMins >= startMins) {
+                    days.contains(todayIdx)
+                } else if (currentMins < endMins) {
+                    days.contains(yesterdayIdx) || days.contains(todayIdx)
+                } else {
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Inicia el sonido de timbre y la vibración en bucle para una llamada entrante.
+     * @param ringtoneMode 0 = Tono Melódico Rítmico (Raw Audio), 1 = Sistema Android, 2 = Frecuencia Digital Sintetizada
+     */
+    fun startIncomingCallAlert(
+        context: Context,
+        soundEnabled: Boolean = true,
+        vibrationEnabled: Boolean = true,
+        ringtoneMode: Int = 0
+    ) {
+        stopAll(context)
+
+        // Verificar si Horario No Molestar (DND) está activo
+        if (isDndActive(context)) {
+            Log.d(TAG, "Horario No Molestar (DND) activo: se silencia la llamada entrante")
+            return
+        }
+
+        isPlayingIncoming = true
+
+        // 1. Vibración continua en bucle (1s vibrar, 1s pausa)
+        if (vibrationEnabled) {
+            startRepeatingVibration(context)
+        }
+
+        // 2. Reproducción de Sonido de Timbre en bucle según modo
+        if (soundEnabled) {
+            when (ringtoneMode) {
+                0 -> {
+                    // Modo 0: Tono Rítmico Melódico Custom (res/raw/incoming_call_ringtone.wav)
+                    try {
+                        val rawId = com.example.R.raw.incoming_call_ringtone
+                        mediaPlayer = MediaPlayer.create(context, rawId)?.apply {
+                            setAudioAttributes(
+                                AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build()
+                            )
+                            isLooping = true
+                            start()
+                        }
+                        Log.d(TAG, "Custom raw incoming ringtone started")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed playing raw ringtone, falling back to system: ${e.message}")
+                        playSystemRingtone(context)
+                    }
+                }
+                2 -> {
+                    // Modo 2: Tono de Frecuencia Digital Sintetizado
+                    playSyntheticDigitalRingtone(context)
+                }
+                else -> {
+                    // Modo 1 (default): Tono de Sistema Android
+                    playSystemRingtone(context)
+                }
+            }
+        }
+    }
+
+    private fun playSystemRingtone(context: Context) {
+        try {
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+            if (ringtoneUri != null) {
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(context, ringtoneUri)
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    isLooping = true
+                    prepare()
+                    start()
+                }
+                Log.d(TAG, "System incoming call ringtone started via MediaPlayer")
+            } else {
+                startFallbackRingtone(context)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaPlayer system ringtone failed, falling back: ${e.message}")
+            try {
+                mediaPlayer?.reset()
+                mediaPlayer?.release()
+            } catch (_: Exception) {}
+            mediaPlayer = null
+            startFallbackRingtone(context)
+        }
+    }
+
+    private fun playSyntheticDigitalRingtone(context: Context) {
+        dialToneJob = CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val toneGen = ToneGenerator(AudioManager.STREAM_RING, 85)
+                toneGenerator = toneGen
+                while (isActive && isPlayingIncoming) {
+                    toneGen.startTone(ToneGenerator.TONE_CDMA_CALL_SIGNAL_ISDN_NORMAL, 1000)
+                    delay(1200)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Synthetic digital ringtone exception: ${e.message}")
+            }
+        }
+    }
+
+    private fun startFallbackRingtone(context: Context) {
+        try {
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+            if (ringtoneUri != null) {
+                ringtone = RingtoneManager.getRingtone(context, ringtoneUri)?.apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        isLooping = true
+                    }
+                    audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                    play()
+                }
+                Log.d(TAG, "Incoming call ringtone started via RingtoneManager fallback")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Ringtone fallback failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Inicia tono de llamada saliente (espera a que el otro responda)
+     */
+    fun startOutgoingDialTone(context: Context, soundEnabled: Boolean = true) {
+        stopAll(context)
+        if (!soundEnabled) return
+
+        isPlayingOutgoing = true
+        dialToneJob = CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val toneGen = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70)
+                toneGenerator = toneGen
+                while (isActive && isPlayingOutgoing) {
+                    toneGen.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1500)
+                    delay(3500)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Outgoing dial tone exception: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Efecto sonoro y háptico al contestar / conectar la llamada
+     */
+    fun playCallConnected(context: Context) {
+        stopAll(context)
+        // Vibración corta de confirmación
+        vibrateOnce(context, 70)
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+            tg.startTone(ToneGenerator.TONE_PROP_BEEP2, 200)
+        } catch (e: Exception) {
+            Log.w(TAG, "Connected tone error: ${e.message}")
+        }
+    }
+
+    /**
+     * Efecto sonoro y háptico al colgar, rechazar o finalizar llamada
+     */
+    fun playCallEnded(context: Context) {
+        stopAll(context)
+        // Vibración doble de fin de llamada
+        vibratePattern(context, longArrayOf(0, 100, 80, 100))
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+            tg.startTone(ToneGenerator.TONE_PROP_PROMPT, 300)
+        } catch (e: Exception) {
+            Log.w(TAG, "Ended tone error: ${e.message}")
+        }
+    }
+
+    /**
+     * Alerta de llamada perdida / expirada
+     */
+    fun playCallMissed(context: Context) {
+        stopAll(context)
+        vibratePattern(context, longArrayOf(0, 200, 100, 200, 100, 300))
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
+            tg.startTone(ToneGenerator.TONE_CDMA_SOFT_ERROR_LITE, 400)
+        } catch (e: Exception) {
+            Log.w(TAG, "Missed tone error: ${e.message}")
+        }
+    }
+
+    /**
+     * Inicia una vibración continua repetitiva
+     */
+    fun startRepeatingVibration(context: Context) {
+        try {
+            val vibrator = getVibrator(context) ?: return
+            val pattern = longArrayOf(0, 1000, 1000)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = VibrationEffect.createWaveform(pattern, 1) // 1 = repetir desde índice 1
+                vibrator.vibrate(effect)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(pattern, 1)
+            }
+            Log.d(TAG, "Continuous call vibration started")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting continuous vibration: ${e.message}")
+        }
+    }
+
+    /**
+     * Vibración única de duración específica en milisegundos
+     */
+    fun vibrateOnce(context: Context, durationMs: Long = 100) {
+        try {
+            val vibrator = getVibrator(context) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMs)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error vibrating once: ${e.message}")
+        }
+    }
+
+    /**
+     * Patrón de vibración personalizado
+     */
+    fun vibratePattern(context: Context, pattern: LongArray) {
+        try {
+            val vibrator = getVibrator(context) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(pattern, -1)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error vibrating pattern: ${e.message}")
+        }
+    }
+
+    /**
+     * Detiene de inmediato todos los sonidos, tonos y vibraciones activas.
+     */
+    fun stopAll(context: Context) {
+        isPlayingIncoming = false
+        isPlayingOutgoing = false
+
+        // Cancelar Job de tono de marcación
+        dialToneJob?.cancel()
+        dialToneJob = null
+
+        // Detener MediaPlayer
+        try {
+            mediaPlayer?.let { mp ->
+                try {
+                    if (mp.isPlaying) {
+                        mp.pause()
+                    }
+                } catch (_: Exception) {}
+                try { mp.reset() } catch (_: Exception) {}
+                try { mp.release() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing media player: ${e.message}")
+        } finally {
+            mediaPlayer = null
+        }
+
+        // Detener Ringtone
+        try {
+            ringtone?.let {
+                if (it.isPlaying) {
+                    it.stop()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping ringtone: ${e.message}")
+        } finally {
+            ringtone = null
+        }
+
+        // Detener ToneGenerator
+        try {
+            toneGenerator?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing tone generator: ${e.message}")
+        } finally {
+            toneGenerator = null
+        }
+
+        // Detener Vibración
+        try {
+            val vibrator = getVibrator(context)
+            vibrator?.cancel()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error cancelling vibrator: ${e.message}")
+        }
+
+        Log.d(TAG, "All sounds, ringtones and vibrations stopped")
+    }
+
+    fun stopIncomingCallAlert() {
+        isPlayingIncoming = false
+        // Podríamos pasar el contexto si quisiéramos detener vibración aquí, 
+        // pero stopAll ya se encarga en los flujos principales. 
+        // Por ahora, dialToneJob y mediaPlayer se limpian en stopAll.
+    }
+
+    fun stopOutgoingDialTone() {
+        isPlayingOutgoing = false
+        dialToneJob?.cancel()
+        dialToneJob = null
+    }
+}

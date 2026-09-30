@@ -1,18 +1,18 @@
 package com.example.data.api
 
 import android.util.Base64
-import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 
 /**
  * Direct Google Workspace REST actions for the isolated test build.
@@ -135,17 +135,14 @@ class GoogleWorkspaceActionsApi(
         val metadata = JSONObject()
             .put("name", fileName)
             .put("mimeType", mimeType)
-        val multipart = MultipartBody.Builder()
-            .setType("multipart/related".toMediaType())
-            .addPart(
-                Headers.Builder().add("Content-Type", "application/json; charset=UTF-8").build(),
-                metadata.toString().toRequestBody(JSON)
-            )
-            .addPart(
-                Headers.Builder().add("Content-Type", mimeType).build(),
-                bytes.toRequestBody(mimeType.toMediaType())
-            )
-            .build()
+        val boundary = "OmniStudio-${UUID.randomUUID()}"
+        val multipart = ByteArrayOutputStream().apply {
+            write("--$boundary\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+            write(metadata.toString().toByteArray(StandardCharsets.UTF_8))
+            write("\r\n--$boundary\r\nContent-Type: $mimeType\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+            write(bytes)
+            write("\r\n--$boundary--\r\n".toByteArray(StandardCharsets.UTF_8))
+        }.toByteArray().toRequestBody("multipart/related; boundary=$boundary".toMediaType())
         val url = url(driveBase, "upload", "drive", "v3", "files")
             .newBuilder()
             .addQueryParameter("uploadType", "multipart")

@@ -121,6 +121,7 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.59.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.59.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

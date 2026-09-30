@@ -1,8 +1,11 @@
+import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    id("com.google.gms.google-services") version "4.5.0"
 }
 
 android {
@@ -10,7 +13,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example"
+        applicationId = "com.aistudio.omnistudio.wkspea"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -19,8 +22,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            signingConfig = signingConfigs.getByName("debugConfig")
             buildConfigField("String", "GEMINI_API_KEY", "\"${System.getenv("GEMINI_API_KEY") ?: "MY_GEMINI_API_KEY"}\"")
             buildConfigField("String", "OPENROUTESERVICE_API_KEY", "\"${System.getenv("OPENROUTESERVICE_API_KEY") ?: "MY_OPENROUTESERVICE_API_KEY"}\"")
             buildConfigField("String", "GIPHY_API_KEY", "\"${System.getenv("GIPHY_API_KEY") ?: "Sp8FgZ0UZm703LiBx3RutbdHH3q7XODd"}\"")
@@ -50,6 +65,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    googleServices {
+        missingGoogleServicesStrategy = MissingGoogleServicesStrategy.ERROR
     }
 }
 

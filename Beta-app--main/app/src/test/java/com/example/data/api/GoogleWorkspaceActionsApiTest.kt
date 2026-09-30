@@ -80,6 +80,22 @@ class GoogleWorkspaceActionsApiTest {
     }
 
     @Test
+    fun permanentlyDeleteEmailRequiresConfirmationAndUsesDeleteEndpoint() {
+        assertThrows(IllegalStateException::class.java) {
+            api.deleteEmailPermanently("test-token", "message-1", confirmed = false)
+        }
+        assertEquals(0, server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(204))
+
+        api.deleteEmailPermanently("test-token", "message-1", confirmed = true)
+
+        val request = server.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("/gmail/v1/users/me/messages/message-1", request.path)
+        assertEquals("Bearer test-token", request.getHeader("Authorization"))
+    }
+
+    @Test
     fun createCalendarEventPostsRequestedDetails() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"event-1\"}"))
 
@@ -132,6 +148,22 @@ class GoogleWorkspaceActionsApiTest {
         val multipart = request.body.readUtf8()
         assertTrue(multipart.contains("note.txt"))
         assertTrue(multipart.contains("hello"))
+    }
+
+    @Test
+    fun permanentlyDeleteDriveFileRequiresConfirmationAndUsesDeleteEndpoint() {
+        assertThrows(IllegalStateException::class.java) {
+            api.deleteDriveFilePermanently("test-token", "file-1", confirmed = false)
+        }
+        assertEquals(0, server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(204))
+
+        api.deleteDriveFilePermanently("test-token", "file-1", confirmed = true)
+
+        val request = server.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("/drive/v3/files/file-1", request.path)
+        assertEquals("Bearer test-token", request.getHeader("Authorization"))
     }
 
     @Test

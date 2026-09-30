@@ -79,6 +79,16 @@ class GoogleWorkspaceActionsApi(
         return execute("POST", url, accessToken, EMPTY_BODY)
     }
 
+    /** Permanently delete one Gmail message. The UI must label this irreversible action and request confirmation. */
+    @Throws(IOException::class)
+    fun deleteEmailPermanently(accessToken: String, messageId: String, confirmed: Boolean): GoogleWorkspaceApiResult {
+        requireConfirmed(confirmed)
+        requireToken(accessToken)
+        requireId(messageId, "messageId")
+        val url = url(gmailBase, "gmail", "v1", "users", "me", "messages", messageId)
+        return execute("DELETE", url, accessToken, null)
+    }
+
     /** Create a timed event on the signed-in user's primary calendar. */
     @Throws(IOException::class)
     fun createCalendarEvent(
@@ -163,6 +173,16 @@ class GoogleWorkspaceActionsApi(
             .build()
         val body = JSONObject().put("trashed", true).toString().toRequestBody(JSON)
         return execute("PATCH", url, accessToken, body)
+    }
+
+    /** Permanently delete a Drive file the app is allowed to access via drive.file. */
+    @Throws(IOException::class)
+    fun deleteDriveFilePermanently(accessToken: String, fileId: String, confirmed: Boolean): GoogleWorkspaceApiResult {
+        requireConfirmed(confirmed)
+        requireToken(accessToken)
+        requireId(fileId, "fileId")
+        val url = url(driveBase, "drive", "v3", "files", fileId)
+        return execute("DELETE", url, accessToken, null)
     }
 
     private fun execute(

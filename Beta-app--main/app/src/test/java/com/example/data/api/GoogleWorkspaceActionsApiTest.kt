@@ -258,6 +258,9 @@ class GoogleWorkspaceActionsApiTest {
         assertTrue(metadata.path!!.startsWith("/drive/v3/files/file-1?fields="))
 
         val download = api.downloadDriveFile("test-token", "file-1")
+        val downloadRequest = server.takeRequest()
+        assertEquals("GET", downloadRequest.method)
+        assertTrue(downloadRequest.path!!.contains("alt=media"))
         assertEquals("hello", String(download.bytes, Charsets.UTF_8))
         assertEquals("text/plain", download.contentType?.substringBefore(';'))
 

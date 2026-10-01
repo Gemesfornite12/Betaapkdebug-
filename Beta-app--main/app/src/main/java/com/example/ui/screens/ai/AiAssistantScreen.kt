@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,16 +47,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.Scope
 import com.google.firebase.auth.FirebaseAuth
 import com.example.data.api.GroqWorkspaceConnectors
 import com.example.data.model.ChatMessage
 import com.example.ui.viewmodel.OmniViewModel
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.util.Locale
 
 private sealed interface PendingWorkspaceAuthorization {
     data class Connect(val connectorId: String) : PendingWorkspaceAuthorization
     data class Query(val text: String, val connectorIds: Set<String>) : PendingWorkspaceAuthorization
+    data class Action(val request: GoogleWorkspaceActionRequest) : PendingWorkspaceAuthorization
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -104,6 +108,10 @@ fun AiAssistantScreen(
     val isSaraAdvancedLoading by viewModel.isSaraAdvancedLoading.collectAsState()
     var showSaraAdvanced by remember { mutableStateOf(false) }
     var showGroqConnectors by remember { mutableStateOf(false) }
+    var showGoogleWorkspaceActions by remember { mutableStateOf(false) }
+    var workspaceActionLoading by remember { mutableStateOf(false) }
+    var workspaceActionResult by remember { mutableStateOf<String?>(null) }
+    val workspaceActionScope = rememberCoroutineScope()
     var saraAdvancedInput by remember { mutableStateOf("") }
     var showSaraLibrary by remember { mutableStateOf(false) }
     var pendingKnowledge by remember { mutableStateOf<String?>(null) }
@@ -139,6 +147,18 @@ fun AiAssistantScreen(
             is PendingWorkspaceAuthorization.Query -> {
                 val tokens = action.connectorIds.associateWith { accessToken }
                 viewModel.sendAiMessageWithGroqWorkspace(action.text, tokens)
+            }
+            is PendingWorkspaceAuthorization.Action -> {
+                workspaceActionLoading = true
+                workspaceActionScope.launch {
+                    workspaceActionResult = runCatching {
+                        executeGoogleWorkspaceAction(context, action.request, accessToken)
+                    }.fold(
+                        onSuccess = { it },
+                        onFailure = { "No se completó la acción: ${it.message ?: "error de Google"}" }
+                    )
+                    workspaceActionLoading = false
+                }
             }
         }
     }
@@ -204,6 +224,44 @@ fun AiAssistantScreen(
             }
     }
 
+    fun requestGoogleWorkspaceAction(request: GoogleWorkspaceActionRequest) {
+        if (firebaseUid.isBlank()) {
+            Toast.makeText(context, "Inicia sesión en OmniStudio antes de usar Google Workspace.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val activity = context.findActivity()
+        if (activity == null) {
+            Toast.makeText(context, "No se pudo abrir la autorización de Google.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val pending = PendingWorkspaceAuthorization.Action(request)
+        val authorizationRequest = AuthorizationRequest.builder()
+            .setRequestedScopes(listOf(Scope(request.type.scope)))
+            .build()
+        Identity.getAuthorizationClient(activity).authorize(authorizationRequest)
+            .addOnSuccessListener { authorizationResult ->
+                if (authorizationResult.hasResolution()) {
+                    val pendingIntent = authorizationResult.pendingIntent
+                    if (pendingIntent == null) {
+                        Toast.makeText(context, "Google no pudo iniciar la autorización.", Toast.LENGTH_LONG).show()
+                    } else {
+                        pendingWorkspaceAuthorization = pending
+                        runCatching {
+                            workspaceAuthorizationLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                        }.onFailure {
+                            pendingWorkspaceAuthorization = null
+                            Toast.makeText(context, "No se pudo abrir el permiso de Google.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } else {
+                    finishWorkspaceAuthorization(pending, authorizationResult.accessToken)
+                }
+            }
+            .addOnFailureListener {
+                Toast.makeText(context, "No se pudo autorizar el permiso de Google.", Toast.LENGTH_LONG).show()
+            }
+    }
+
     LaunchedEffect(Unit) { viewModel.refreshSaraKnowledge() }
     LaunchedEffect(saraKnowledgeFeedback) {
         saraKnowledgeFeedback?.let { message ->
@@ -227,6 +285,9 @@ fun AiAssistantScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showGoogleWorkspaceActions = true }) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Acciones avanzadas de Google Workspace", tint = Color(0xFF94A3B8))
+                    }
                     IconButton(onClick = { showGroqConnectors = true }) {
                         Icon(Icons.Default.Link, contentDescription = "Conectores de Google Workspace", tint = Color(0xFF94A3B8))
                     }
@@ -271,6 +332,33 @@ fun AiAssistantScreen(
                 viewModel.sendAiAttachment(uri, prompt)
             },
             onRequestSave = { pendingKnowledge = it }
+        )
+    }
+
+    if (showGoogleWorkspaceActions) {
+        GoogleWorkspaceActionsDialog(
+            onDismiss = { showGoogleWorkspaceActions = false },
+            onRun = { request -> requestGoogleWorkspaceAction(request) }
+        )
+    }
+    if (workspaceActionLoading) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Google Workspace") },
+            text = { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(24.dp)); Spacer(Modifier.width(12.dp)); Text("Ejecutando la acción confirmada…") } },
+            confirmButton = {}
+        )
+    }
+    workspaceActionResult?.let { resultText ->
+        AlertDialog(
+            onDismissRequest = { workspaceActionResult = null },
+            title = { Text("Resultado de Google Workspace") },
+            text = {
+                Surface(color = Color(0xFF1E293B), shape = RoundedCornerShape(12.dp)) {
+                    Text(resultText, color = Color.White, modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).padding(12.dp))
+                }
+            },
+            confirmButton = { TextButton(onClick = { workspaceActionResult = null }) { Text("Cerrar") } }
         )
     }
 

@@ -285,9 +285,6 @@ fun AiAssistantScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showGoogleWorkspaceActions = true }) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Acciones avanzadas de Google Workspace", tint = Color(0xFF94A3B8))
-                    }
                     IconButton(onClick = { showGroqConnectors = true }) {
                         Icon(Icons.Default.Link, contentDescription = "Conectores de Google Workspace", tint = Color(0xFF94A3B8))
                     }
@@ -371,6 +368,19 @@ fun AiAssistantScreen(
                     modifier = Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())
                 ) {
                     Text("Conecta solo los servicios que quieras. Marca los que Sara podrá consultar en tus próximos mensajes; todos son de solo lectura.")
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            showGroqConnectors = false
+                            showGoogleWorkspaceActions = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Acciones avanzadas de Workspace")
+                    }
+                    Text("Gmail, Calendar y Drive: requieren permiso y confirmación para cada cambio.", fontSize = 11.sp, color = Color(0xFF64748B))
                     Spacer(Modifier.height(10.dp))
                     GroqWorkspaceConnectors.all.forEach { connector ->
                         val connected = connector.id in connectedConnectorIds

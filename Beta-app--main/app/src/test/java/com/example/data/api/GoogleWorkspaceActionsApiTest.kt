@@ -68,6 +68,64 @@ class GoogleWorkspaceActionsApiTest {
     }
 
     @Test
+    fun gmailReadSearchAndLabelEndpointsUseExpectedRoutes() {
+        repeat(7) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+
+        api.listEmailMessages("test-token", query = "is:unread", maxResults = 10)
+        val search = server.takeRequest()
+        assertEquals("GET", search.method)
+        assertTrue(search.path!!.startsWith("/gmail/v1/users/me/messages?"))
+        assertTrue(search.path!!.contains("q=is%3Aunread"))
+
+        api.getEmailMessage("test-token", "message-1")
+        assertTrue(server.takeRequest().path!!.contains("/messages/message-1?format=full"))
+
+        api.listGmailLabels("test-token")
+        assertEquals("/gmail/v1/users/me/labels", server.takeRequest().path)
+
+        api.createGmailLabel("test-token", "OmniStudio", confirmed = true)
+        val create = server.takeRequest()
+        assertEquals("POST", create.method)
+        assertEquals("OmniStudio", JSONObject(create.body.readUtf8()).getString("name"))
+
+        api.updateGmailLabel("test-token", "Label_1", name = "Updated", confirmed = true)
+        assertEquals("PATCH", server.takeRequest().method)
+
+        api.deleteGmailLabel("test-token", "Label_1", confirmed = true)
+        assertEquals("DELETE", server.takeRequest().method)
+
+        api.modifyEmailLabels("test-token", "message-1", addLabelIds = listOf("Label_1"), confirmed = true)
+        val modify = server.takeRequest()
+        assertEquals("POST", modify.method)
+        assertTrue(modify.path!!.endsWith("/messages/message-1/modify"))
+    }
+
+    @Test
+    fun draftLifecycleCreatesListsReadsSendsAndDeletes() {
+        repeat(5) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+
+        api.createEmailDraft("test-token", "person@example.com", "Draft", "Body", confirmed = true)
+        val create = server.takeRequest()
+        assertEquals("POST", create.method)
+        assertEquals("/gmail/v1/users/me/drafts", create.path)
+        assertTrue(JSONObject(create.body.readUtf8()).getJSONObject("message").has("raw"))
+
+        api.listEmailDrafts("test-token")
+        assertTrue(server.takeRequest().path!!.startsWith("/gmail/v1/users/me/drafts?"))
+
+        api.getEmailDraft("test-token", "draft-1")
+        assertEquals("/gmail/v1/users/me/drafts/draft-1", server.takeRequest().path)
+
+        api.sendEmailDraft("test-token", "draft-1", confirmed = true)
+        assertEquals("/gmail/v1/users/me/drafts/send", server.takeRequest().path)
+
+        api.deleteEmailDraftPermanently("test-token", "draft-1", confirmed = true)
+        val delete = server.takeRequest()
+        assertEquals("DELETE", delete.method)
+        assertEquals("/gmail/v1/users/me/drafts/draft-1", delete.path)
+    }
+
+    @Test
     fun trashEmailPostsToReversibleTrashEndpoint() {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"message-1\",\"labelIds\":[\"TRASH\"]}"))
 
@@ -119,6 +177,37 @@ class GoogleWorkspaceActionsApiTest {
     }
 
     @Test
+    fun calendarListCreateCalendarSearchAvailabilityAndUpdateRoutes() {
+        repeat(5) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+
+        api.listCalendars("test-token")
+        assertEquals("/calendar/v3/users/me/calendarList", server.takeRequest().path)
+
+        api.createSecondaryCalendar("test-token", "Omni test", "America/Costa_Rica", confirmed = true)
+        val createCalendar = server.takeRequest()
+        assertEquals("POST", createCalendar.method)
+        assertEquals("Omni test", JSONObject(createCalendar.body.readUtf8()).getString("summary"))
+
+        api.listCalendarEvents("test-token", query = "school", maxResults = 25)
+        val events = server.takeRequest()
+        assertTrue(events.path!!.startsWith("/calendar/v3/calendars/primary/events?"))
+        assertTrue(events.path!!.contains("q=school"))
+
+        api.queryCalendarAvailability(
+            "test-token", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "UTC"
+        )
+        val freeBusy = server.takeRequest()
+        assertEquals("/calendar/v3/freeBusy", freeBusy.path)
+        assertEquals("primary", JSONObject(freeBusy.body.readUtf8()).getJSONArray("items").getJSONObject(0).getString("id"))
+
+        api.updateCalendarEvent("test-token", "event-1", summary = "Updated", confirmed = true)
+        val update = server.takeRequest()
+        assertEquals("PATCH", update.method)
+        assertEquals("/calendar/v3/calendars/primary/events/event-1", update.path)
+        assertEquals("Updated", JSONObject(update.body.readUtf8()).getString("summary"))
+    }
+
+    @Test
     fun deleteCalendarEventRequiresConfirmationAndUsesEventId() {
         server.enqueue(MockResponse().setResponseCode(204))
 
@@ -148,6 +237,43 @@ class GoogleWorkspaceActionsApiTest {
         val multipart = request.body.readUtf8()
         assertTrue(multipart.contains("note.txt"))
         assertTrue(multipart.contains("hello"))
+    }
+
+    @Test
+    fun driveSearchMetadataDownloadFolderAndUpdatesUseExpectedRoutes() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"files\":[]}"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"file-1\"}"))
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/plain").setBody("hello"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"folder-1\"}"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"file-1\"}"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"id\":\"file-1\"}"))
+
+        api.listDriveFiles("test-token", query = "name contains 'note'", pageSize = 10)
+        val list = server.takeRequest()
+        assertTrue(list.path!!.startsWith("/drive/v3/files?"))
+        assertTrue(list.path!!.contains("pageSize=10"))
+
+        api.getDriveFileMetadata("test-token", "file-1")
+        val metadata = server.takeRequest()
+        assertTrue(metadata.path!!.startsWith("/drive/v3/files/file-1?fields="))
+
+        val download = api.downloadDriveFile("test-token", "file-1")
+        assertEquals("hello", String(download.bytes, Charsets.UTF_8))
+        assertEquals("text/plain", download.contentType?.substringBefore(';'))
+
+        api.createDriveFolder("test-token", "Folder", confirmed = true)
+        val folder = server.takeRequest()
+        assertEquals("POST", folder.method)
+        assertEquals("application/vnd.google-apps.folder", JSONObject(folder.body.readUtf8()).getString("mimeType"))
+
+        api.updateDriveFileMetadata("test-token", "file-1", name = "renamed.txt", confirmed = true)
+        assertEquals("PATCH", server.takeRequest().method)
+
+        api.updateDriveFileContent("test-token", "file-1", "text/plain", "new body".toByteArray(), confirmed = true)
+        val update = server.takeRequest()
+        assertEquals("PATCH", update.method)
+        assertTrue(update.path!!.startsWith("/upload/drive/v3/files/file-1?"))
+        assertTrue(update.body.readUtf8().contains("new body"))
     }
 
     @Test
